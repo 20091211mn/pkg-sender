@@ -3,7 +3,7 @@
 The app does not collect your data. There are no accounts, ads, analytics or crash reports.
 
 **Stored on your device only:** the PS4 address, recent links, language and settings, a copy of the catalog and notices,
-and the store versions you sent. Uninstalling the app or clearing its data removes them.
+the store versions you sent, and the support conversations you started. Uninstalling the app or clearing its data removes them.
 
 **Internet connections**
 - GitHub (api.github.com, raw.githubusercontent.com, github.com): to check for updates and read the store and notices.
@@ -14,5 +14,9 @@ and the store versions you sent. Uninstalling the app or clearing its data remov
 
 **Android permissions:** internet, a background service and keeping the device awake during transfers, notifications,
 installing updates (only when updating the app), and rescheduling the check after a restart.
+
+**Help and support:** when you write a message, the message, the contact you typed (if any), the app version, the system
+type and the language are sent to the developer through a relay service and stored in a private GitHub repository.
+Nothing else is sent.
 
 The admin app stores a GitHub token on your device only and sends it to no one except GitHub.

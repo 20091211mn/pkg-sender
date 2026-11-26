@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'updater.dart' show kRepo;
+import 'config.dart';
 
 /// Public catalog published by the admin app (store/catalog.json in the repository).
 const String kStoreCatalogUrl =

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/announcements.dart';
@@ -7,6 +8,8 @@ import '../services/updater.dart';
 import 'announcement_editor.dart';
 import 'github_api.dart';
 import 'item_editor.dart';
+import 'stats_tab.dart';
+import 'support_tab.dart';
 import '../util/brand.dart';
 
 void main() => runApp(const AdminApp());
@@ -57,7 +60,16 @@ class _AdminGateState extends State<AdminGate> {
       final p = await SharedPreferences.getInstance();
       final token = p.getString('admin_token');
       final repo = p.getString('admin_repo') ?? kRepo;
-      if (token != null && token.isNotEmpty) _api = GithubApi(token, repo);
+      if (token != null && token.isNotEmpty) {
+        _api = GithubApi(token, repo);
+        try {
+          final full = await _api!.resolveRepo();
+          if (full != repo) {
+            await p.setString('admin_repo', full);
+            _api = GithubApi(token, full);
+          }
+        } catch (_) {} // offline: keep the saved name
+      }
     } catch (_) {}
     if (mounted) setState(() => _loaded = true);
   }
@@ -218,6 +230,27 @@ class _AdminHomeState extends State<AdminHome> {
     _loadNotices();
     _reconcile();
     _checkAdminUpdate();
+    _loadSupportRepo();
+  }
+
+  /// The private repository where the support conversations are stored.
+  String _supportRepo = '';
+
+  Future<void> _loadSupportRepo() async {
+    String repo = '${widget.api.repo}-support';
+    try {
+      final p = await SharedPreferences.getInstance();
+      repo = p.getString('support_repo') ?? repo;
+    } catch (_) {}
+    if (mounted) setState(() => _supportRepo = repo);
+  }
+
+  Future<void> _setSupportRepo(String repo) async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString('support_repo', repo);
+    } catch (_) {}
+    if (mounted) setState(() => _supportRepo = repo);
   }
 
   /// Did the last update of this app work?
@@ -243,60 +276,63 @@ class _AdminHomeState extends State<AdminHome> {
     try {
       final r = await widget.api.adminRelease();
       if (r == null || r.apkUrl == null || r.build <= kBuildNumber) return;
-      final p = await SharedPreferences.getInstance();
-      if (r.build <= (p.getInt('snoozed_build') ?? 0)) return;
+      final reason = await Updater.blockedReason(r.build);
+      if (reason == 'not_newer') return;
+      final u = UpdateInfo(
+        tag: 'build ${r.build}',
+        build: r.build,
+        notes: '',
+        pageUrl: '',
+        apkUrl: r.apkUrl,
+      );
+      u.blocked = reason;
       if (mounted) {
-        setState(() => _upd = UpdateInfo(
-              tag: 'build ${r.build}',
-              build: r.build,
-              notes: '',
-              pageUrl: '',
-              apkUrl: r.apkUrl,
-            ));
+        setState(() {
+          _upd = u;
+          if (reason == 'signature') _updMsg = _signatureMsg;
+        });
       }
     } catch (_) {}
   }
 
+  static const _signatureMsg =
+      'لا يمكن التحديث فوق النسخة الحالية لأنها موقّعة بمفتاح مختلف. احذف تطبيق الإدارة مرة واحدة ثم ثبّت النسخة الجديدة؛ بعدها تعمل التحديثات تلقائياً.';
+
   Future<void> _updateApp() async {
     final u = _upd;
-    final url = u?.apkUrl;
-    if (u == null || url == null) return;
+    if (u == null) return;
     setState(() {
       _updating = true;
       _updProgress = 0;
       _updMsg = null;
     });
-    try {
-      final path = await Updater.download(url, (p) {
-        if (mounted) setState(() => _updProgress = p);
-      });
-      final chk = await Updater.inspect(path);
-      if (chk.sameSignature == false) {
-        await Updater.snooze(u.build);
-        if (mounted) {
-          setState(() => _updMsg =
-              'لا يمكن التحديث فوق النسخة الحالية لأنها موقّعة بمفتاح مختلف. احذف تطبيق الإدارة مرة واحدة ثم ثبّت النسخة الجديدة.');
-        }
-        return;
+    final run = await UpdateFlow.run(u, (p) {
+      if (mounted) setState(() => _updProgress = p);
+    });
+    if (!mounted) return;
+    setState(() {
+      _updating = false;
+      switch (run.step) {
+        case UpdateStep.blockedSignature:
+          u.blocked = 'signature';
+          _updMsg = _signatureMsg;
+          break;
+        case UpdateStep.notNewer:
+          _upd = null;
+          _updMsg = 'النسخة المنزّلة ليست أحدث من المثبتة.';
+          break;
+        case UpdateStep.needsPermission:
+          _updMsg =
+              'اسمح بـ "تثبيت التطبيقات غير المعروفة" لهذا التطبيق ثم اضغط تحديث مرة أخرى.';
+          break;
+        case UpdateStep.failed:
+          _updMsg = 'فشل التحديث: ${run.error}';
+          break;
+        case UpdateStep.done:
+          _updMsg = null;
+          break;
       }
-      final a = chk.archiveVersion;
-      final i = chk.installedVersion;
-      if (a != null && i != null && a <= i) {
-        await Updater.snooze(u.build);
-        if (mounted) setState(() => _upd = null);
-        return;
-      }
-      await Updater.markPending(u);
-      final r = await Updater.install(path);
-      if (mounted && r == 'needs_permission') {
-        setState(() => _updMsg =
-            'اسمح بـ "تثبيت التطبيقات غير المعروفة" لهذا التطبيق ثم اضغط تحديث مرة أخرى.');
-      }
-    } catch (e) {
-      if (mounted) setState(() => _updMsg = 'فشل التحديث: $e');
-    } finally {
-      if (mounted) setState(() => _updating = false);
-    }
+    });
   }
 
   Widget _updateBanner(ColorScheme cs) {
@@ -313,8 +349,16 @@ class _AdminHomeState extends State<AdminHome> {
               const Icon(Icons.system_update),
               const SizedBox(width: 8),
               Expanded(child: Text('يوجد تحديث لتطبيق الإدارة (${u.tag})')),
-              if (!_updating)
+              if (!_updating && u.blocked != 'signature')
                 FilledButton(onPressed: _updateApp, child: const Text('تحديث')),
+              if (!_updating && u.blocked == 'signature' && u.apkUrl != null)
+                OutlinedButton(
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: u.apkUrl!));
+                    if (mounted) setState(() => _updMsg = 'تم نسخ رابط التنزيل.');
+                  },
+                  child: const Text('نسخ الرابط'),
+                ),
             ]),
             if (_updating) ...[
               const SizedBox(height: 8),
@@ -546,28 +590,30 @@ class _AdminHomeState extends State<AdminHome> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final storeTab = _tab == 0;
+    const titles = ['إدارة المتجر', 'الإشعارات', 'الإحصائيات', 'الدعم'];
+    final loading = _tab == 0 ? _loading : _noticesLoading;
     return Scaffold(
       appBar: AppBar(
-        title: Text(storeTab ? 'إدارة المتجر' : 'الإشعارات'),
+        title: Text(titles[_tab]),
         actions: [
-          IconButton(
-              tooltip: 'تحديث',
-              onPressed: (storeTab ? _loading : _noticesLoading)
-                  ? null
-                  : (storeTab ? _load : _loadNotices),
-              icon: const Icon(Icons.refresh)),
+          if (_tab <= 1)
+            IconButton(
+                tooltip: 'تحديث',
+                onPressed: loading ? null : (_tab == 0 ? _load : _loadNotices),
+                icon: const Icon(Icons.refresh)),
           IconButton(
               tooltip: 'تسجيل الخروج',
               onPressed: widget.onLogout,
               icon: const Icon(Icons.logout)),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: storeTab ? () => _edit() : _newNotice,
-        icon: Icon(storeTab ? Icons.add : Icons.add_alert),
-        label: Text(storeTab ? 'إضافة' : 'إشعار جديد'),
-      ),
+      floatingActionButton: _tab <= 1
+          ? FloatingActionButton.extended(
+              onPressed: _tab == 0 ? () => _edit() : _newNotice,
+              icon: Icon(_tab == 0 ? Icons.add : Icons.add_alert),
+              label: Text(_tab == 0 ? 'إضافة' : 'إشعار جديد'),
+            )
+          : null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
         onDestinationSelected: (i) => setState(() => _tab = i),
@@ -580,16 +626,46 @@ class _AdminHomeState extends State<AdminHome> {
               icon: Icon(Icons.notifications_outlined),
               selectedIcon: Icon(Icons.notifications),
               label: 'الإشعارات'),
+          NavigationDestination(
+              icon: Icon(Icons.insights_outlined),
+              selectedIcon: Icon(Icons.insights),
+              label: 'الإحصائيات'),
+          NavigationDestination(
+              icon: Icon(Icons.support_agent_outlined),
+              selectedIcon: Icon(Icons.support_agent),
+              label: 'الدعم'),
         ],
       ),
       body: SafeArea(
         child: Column(
           children: [
             if (_upd != null) _updateBanner(cs),
-            Expanded(child: storeTab ? _storeTab(cs) : _noticesTab(cs)),
+            Expanded(child: _tabBody(cs)),
           ],
         ),
       ),
     );
+  }
+
+  Widget _tabBody(ColorScheme cs) {
+    switch (_tab) {
+      case 0:
+        return _storeTab(cs);
+      case 1:
+        return _noticesTab(cs);
+      case 2:
+        return StatsTab(
+          api: widget.api,
+          items: _items,
+          downloads: _downloads,
+          supportRepo: _supportRepo,
+        );
+      default:
+        return SupportTab(
+          api: widget.api,
+          repo: _supportRepo,
+          onRepoChanged: _setSupportRepo,
+        );
+    }
   }
 }

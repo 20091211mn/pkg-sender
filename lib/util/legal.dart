@@ -18,7 +18,7 @@ String disclaimerText(bool ar) => ar
 String privacyText(bool ar) => ar
     ? '''لا يجمع التطبيق بياناتك. لا توجد حسابات ولا إعلانات ولا تحليلات ولا تقارير أعطال.
 
-ما يُحفظ على جهازك فقط: عنوان الـ PS4، سجل الروابط الأخيرة، اللغة والإعدادات، نسخة من الكتالوج والإشعارات، وأي إصدارات من المتجر أرسلتها. تُحذف بحذف التطبيق أو مسح بياناته.
+ما يُحفظ على جهازك فقط: عنوان الـ PS4، سجل الروابط الأخيرة، اللغة والإعدادات، نسخة من الكتالوج والإشعارات، وأي إصدارات من المتجر أرسلتها، ومحادثات الدعم التي بدأتها. تُحذف بحذف التطبيق أو مسح بياناته.
 
 الاتصالات بالإنترنت:
 • GitHub (api.github.com وraw.githubusercontent.com وgithub.com): للتحقق من التحديثات وقراءة المتجر والإشعارات. يرى GitHub عنوان الـ IP الخاص بك.
@@ -27,10 +27,12 @@ String privacyText(bool ar) => ar
 
 صلاحيات أندرويد: الإنترنت، تشغيل خدمة في الخلفية وإبقاء الجهاز مستيقظاً أثناء النقل، الإشعارات، تثبيت التحديثات (عند تحديث التطبيق فقط)، وإعادة جدولة الفحص بعد إعادة التشغيل.
 
+المساعدة والدعم: عند كتابة رسالة تُرسل رسالتك ووسيلة التواصل التي كتبتها (إن كتبتها) ورقم إصدار التطبيق ونوع النظام واللغة إلى المطوّر عبر خدمة وسيطة، وتُحفظ في مستودع خاص على GitHub. لا يُرسل شيء آخر.
+
 تطبيق الإدارة يحفظ توكن GitHub على جهازك فقط ولا يرسله لأي جهة غير GitHub.'''
     : '''The app does not collect your data. There are no accounts, ads, analytics or crash reports.
 
-Only stored on your device: the PS4 address, recent links, language and settings, a copy of the catalog and notices, and the store versions you sent. Uninstalling the app or clearing its data removes them.
+Only stored on your device: the PS4 address, recent links, language and settings, a copy of the catalog and notices, the store versions you sent, and the support conversations you started. Uninstalling the app or clearing its data removes them.
 
 Internet connections:
 • GitHub (api.github.com, raw.githubusercontent.com, github.com): to check for updates and read the store and notices. GitHub sees your IP address.
@@ -38,6 +40,8 @@ Internet connections:
 • Local network: the connection to your PS4, which connects back to your phone to fetch the file. Nothing leaves your local network except what is listed above.
 
 Android permissions: internet, a background service and keeping the device awake during transfers, notifications, installing updates (only when updating the app), and rescheduling the check after a restart.
+
+Help and support: when you write a message, the message, the contact you typed (if any), the app version, the system type and the language are sent to the developer through a relay service and stored in a private GitHub repository. Nothing else is sent.
 
 The admin app stores a GitHub token on your device only and sends it to no one except GitHub.''';
 

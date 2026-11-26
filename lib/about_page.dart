@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'services/app_state.dart';
+import 'services/support.dart';
+import 'support_page.dart';
 import 'services/updater.dart';
 import 'util/brand.dart';
 import 'util/legal.dart';
@@ -87,8 +89,15 @@ class AboutPage extends StatelessWidget {
                         label: Text(t('Copy source link', 'نسخ رابط الكود')),
                       ),
                       OutlinedButton.icon(
-                        onPressed: () => _copy(context, _issues,
-                            t('Support link copied.', 'تم نسخ رابط الدعم.')),
+                        onPressed: () {
+                          if (SupportService.enabled) {
+                            Navigator.of(context).push(MaterialPageRoute<void>(
+                                builder: (_) => const SupportPage()));
+                          } else {
+                            _copy(context, _issues,
+                                t('Support link copied.', 'تم نسخ رابط الدعم.'));
+                          }
+                        },
                         icon: const Icon(Icons.bug_report_outlined),
                         label: Text(t('Report a problem', 'الإبلاغ عن مشكلة')),
                       ),

@@ -30,6 +30,7 @@ jobs:
           --build-number=${{ steps.ver.outputs.n }}
           --dart-define=BUILD_NUMBER=${{ steps.ver.outputs.n }}
           --dart-define=REPO=${{ github.repository }}
+          --dart-define=SUPPORT_URL=${{ vars.SUPPORT_URL }}
       - run: |
           mkdir Payload
           cp -R build/ios/iphoneos/Runner.app Payload/

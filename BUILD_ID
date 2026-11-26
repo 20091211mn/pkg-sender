@@ -1,2 +1,2 @@
-pkgsender build: 2026-11-17T20:39Z
-features: official identity (id/name/legal), store versions + update badge, download counts, admin auto-update, notifications fixes
+pkgsender build: 2026-11-25T12:21Z
+features: update check without API limit + no hidden updates, admin statistics, support (relay + inbox), admin update fix, rename-safe admin

@@ -113,3 +113,12 @@ Settings > System notifications shows whether notifications are allowed and the 
 - Legal: `DISCLAIMER.md`, `PRIVACY.md`, an About page in the app (disclaimer, privacy, license, credits, library licenses)
   and a one-time disclaimer on first launch.
 - Store: download counts (admin), older versions per item, "update available" for items sent from the app.
+
+## Update check, statistics and support
+
+- The app finds the newest version from `app-meta/latest.json` (published by every build; no GitHub API limit) and
+  falls back to the releases API. A failed or cancelled install never hides the update; a build signed with another key
+  is explained and the APK link can be copied.
+- Admin app tabs: Store, Notices, **Statistics** (downloads, repository activity, support counts) and **Support**
+  (inbox with replies). See `support/README.md` to enable support (private repo + free Cloudflare Worker + the
+  `SUPPORT_URL` repository variable).

@@ -4,19 +4,10 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Build number injected by CI (--dart-define=BUILD_NUMBER=...). 0 = local build.
-const int kBuildNumber = int.fromEnvironment('BUILD_NUMBER', defaultValue: 0);
+import 'announcements.dart';
+import 'config.dart';
 
-/// GitHub repository that publishes the releases (must be public).
-const String kRepo =
-    String.fromEnvironment('REPO', defaultValue: '20091211mn/Direct-for-Sony-');
-
-/// SideStore / AltStore source published by the iOS workflow.
-const String kSourceUrl =
-    'https://github.com/$kRepo/releases/download/ios-latest/altstore.json';
-
-/// Name of the Android APK attached to every release.
-const String kApkName = 'pkg-sender.apk';
+export 'config.dart';
 
 /// Bullet lines of release notes ("- feature", "* feature", "• feature").
 /// Falls back to the non-empty lines when there are no bullets.
@@ -46,10 +37,13 @@ class UpdateInfo {
 
   final String tag;
   final int build;
-  final String notes;
+  String notes;
   final String pageUrl;
   final String? apkUrl;
   final String? ipaUrl;
+
+  /// Why this build cannot be installed over the current app ("signature"), or null.
+  String? blocked;
 
   List<String> get features => parseFeatures(notes);
 }
@@ -78,15 +72,22 @@ class UpdateOutcome {
 class Updater {
   static const _ch = MethodChannel('ps4sender/updater');
 
-  static Future<String> _get(String url) async {
+  /// What the last check looked at (shown in Settings to explain a result).
+  static String diagnostics = '';
+  static String _source = '';
+
+  static Future<String> _get(String url, {bool api = false}) async {
     final c = HttpClient()..connectionTimeout = const Duration(seconds: 10);
     try {
       final req = await c.getUrl(Uri.parse(url));
-      req.headers.set(HttpHeaders.acceptHeader, 'application/vnd.github+json');
+      if (api) req.headers.set(HttpHeaders.acceptHeader, 'application/vnd.github+json');
       req.headers.set(HttpHeaders.userAgentHeader, 'pkg-sender');
       final res = await req.close();
       final body = await res.transform(utf8.decoder).join();
       if (res.statusCode == 404) throw Exception('not_found');
+      if (res.statusCode == 403 || res.statusCode == 429) {
+        throw Exception(body.contains('rate limit') ? 'rate_limited' : 'HTTP ${res.statusCode}');
+      }
       if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
       return body;
     } finally {
@@ -94,29 +95,49 @@ class Updater {
     }
   }
 
-  /// The newest published version for this platform, or null when this build
-  /// is already the latest. Throws when the check fails ("not_found" = private repo).
+  /// The newest published version for this platform, or null when this build is
+  /// already the latest. Throws when the check fails ("not_found" = private repo,
+  /// "rate_limited" = too many requests from this network).
   static Future<UpdateInfo?> check() async {
     final best = Platform.isIOS ? await _latestIos() : await _latestAndroid();
+    diagnostics =
+        '$kRepo · ${best == null ? '-' : 'v${best.build}'} · build $kBuildNumber · $_source';
     if (best == null || best.build <= kBuildNumber) return null;
+    await _attachNotes(best);
+    await _attachBlocked(best);
+    if (best.blocked == 'not_newer') return null; // the file is not newer: nothing to install
     return best;
   }
 
-  /// Same as [check] but hides a build the user already failed to install
-  /// (so the banner does not come back again and again).
-  static Future<UpdateInfo?> checkQuiet() async {
-    final u = await check();
-    if (u == null) return null;
-    try {
-      final p = await SharedPreferences.getInstance();
-      if (u.build <= (p.getInt('snoozed_build') ?? 0)) return null;
-    } catch (_) {}
-    return u;
-  }
+  /// Same as [check]; kept for the startup / notification refresh.
+  static Future<UpdateInfo?> checkQuiet() => check();
 
   static Future<UpdateInfo?> _latestAndroid() async {
+    // 1) A small file published by every build. It is not an API call, so it has
+    //    no rate limit (the API allows only 60 requests/hour per network).
+    try {
+      final m = jsonDecode(await _get(
+              'https://github.com/$kRepo/releases/download/app-meta/latest.json'))
+          as Map<String, dynamic>;
+      final build = (m['build'] as num).toInt();
+      final apk = (m['apk'] ?? '') as String;
+      if (build > 0 && apk.isNotEmpty) {
+        _source = 'app-meta';
+        return UpdateInfo(
+          tag: (m['tag'] ?? 'v1.0.$build') as String,
+          build: build,
+          notes: ((m['notes'] ?? '') as String).trim(),
+          pageUrl: (m['page'] ?? '') as String,
+          apkUrl: apk,
+        );
+      }
+    } catch (_) {}
+
+    // 2) The releases API (older builds of the repository have no latest.json).
+    _source = 'api';
     final list = jsonDecode(await _get(
-        'https://api.github.com/repos/$kRepo/releases?per_page=15')) as List;
+        'https://api.github.com/repos/$kRepo/releases?per_page=15',
+        api: true)) as List;
     UpdateInfo? best;
     for (final r in list) {
       final m = r as Map;
@@ -124,11 +145,16 @@ class Updater {
       final tag = (m['tag_name'] ?? '') as String;
       final build = int.tryParse(tag.split('.').last) ?? 0;
       String? apk;
+      String? other;
       for (final a in (m['assets'] as List? ?? const [])) {
-        if ((a as Map)['name'] == kApkName) {
-          apk = (a['browser_download_url'] ?? '') as String;
+        final name = ((a as Map)['name'] ?? '') as String;
+        final url = (a['browser_download_url'] ?? '') as String;
+        if (name == kApkName) apk = url;
+        if (name.endsWith('.apk') && !name.toLowerCase().contains('admin')) {
+          other = url; // e.g. the old "ps4-sender.apk"
         }
       }
+      apk ??= other;
       if (apk == null || apk.isEmpty) continue; // release without an APK
       if (best == null || build > best.build) {
         best = UpdateInfo(
@@ -146,6 +172,7 @@ class Updater {
   /// On iPhone the version comes from the SideStore source (iOS builds only),
   /// not from the Android releases, which are published far more often.
   static Future<UpdateInfo?> _latestIos() async {
+    _source = 'altstore';
     final j = jsonDecode(await _get(kSourceUrl)) as Map<String, dynamic>;
     final apps = j['apps'] as List? ?? const [];
     if (apps.isEmpty) return null;
@@ -161,6 +188,19 @@ class Updater {
       pageUrl: 'https://github.com/$kRepo/releases',
       ipaUrl: (v['downloadURL'] ?? '') as String,
     );
+  }
+
+  /// The "what's new" list comes from the admin's update notice for that build.
+  static Future<void> _attachNotes(UpdateInfo u) async {
+    if (u.notes.isNotEmpty && !RegExp(r'^Build \d+$').hasMatch(u.notes.trim())) return;
+    try {
+      for (final a in await AnnouncementService.fetch()) {
+        if (a.type == 'update' && a.build == u.build && a.features.isNotEmpty) {
+          u.notes = a.features.map((f) => '- $f').join('\n');
+          return;
+        }
+      }
+    } catch (_) {}
   }
 
   // ------------------------------------------------------------- install
@@ -217,7 +257,7 @@ class Updater {
 
   // ------------------------------------------------------- update bookkeeping
 
-  /// Remembers that the user started installing [u].
+  /// Remembers that the installer was opened for [u] (checked at the next start).
   static Future<void> markPending(UpdateInfo u) async {
     try {
       final p = await SharedPreferences.getInstance();
@@ -228,15 +268,37 @@ class Updater {
     } catch (_) {}
   }
 
-  /// Hides [build] from the automatic banner (the manual check still shows it).
-  static Future<void> snooze(int build) async {
+  /// Remembers that [build] cannot be installed over this app:
+  /// "signature" (needs a reinstall) or "not_newer" (nothing to install).
+  static Future<void> markBlocked(int build, String reason) async {
     try {
       final p = await SharedPreferences.getInstance();
-      await p.setInt('snoozed_build', build);
+      await p.setInt('blocked_build', build);
+      await p.setString('blocked_reason', reason);
     } catch (_) {}
   }
 
+  static Future<void> _attachBlocked(UpdateInfo u) async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      if (p.getInt('blocked_build') == u.build) {
+        u.blocked = p.getString('blocked_reason');
+      }
+    } catch (_) {}
+  }
+
+  /// The reason [build] is blocked (null = not blocked). For the admin app.
+  static Future<String?> blockedReason(int build) async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      return p.getInt('blocked_build') == build ? p.getString('blocked_reason') : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Call once at startup: did the last update attempt work?
+  /// A failed attempt is reported once and never hides the update.
   static Future<UpdateOutcome?> reconcile() async {
     try {
       final p = await SharedPreferences.getInstance();
@@ -248,12 +310,15 @@ class Updater {
           (p.getInt('pending_time') ?? 0);
       if (kBuildNumber >= pending) {
         await _clearPending(p);
+        if ((p.getInt('blocked_build') ?? 0) <= kBuildNumber) {
+          await p.remove('blocked_build');
+          await p.remove('blocked_reason');
+        }
         return UpdateOutcome(
             success: true, tag: tag, features: parseFeatures(notes));
       }
       if (age > 60 * 1000) {
         await _clearPending(p);
-        await p.setInt('snoozed_build', pending);
         return UpdateOutcome(success: false, tag: tag, features: const []);
       }
     } catch (_) {}
@@ -265,5 +330,45 @@ class Updater {
     await p.remove('pending_time');
     await p.remove('pending_tag');
     await p.remove('pending_notes');
+  }
+}
+
+enum UpdateStep { done, needsPermission, blockedSignature, notNewer, failed }
+
+class UpdateRun {
+  UpdateRun(this.step, [this.error]);
+
+  final UpdateStep step;
+  final String? error;
+}
+
+/// Download, check and install an update. Used by the app and by the admin app.
+class UpdateFlow {
+  static Future<UpdateRun> run(
+      UpdateInfo u, void Function(double progress) onProgress) async {
+    final url = u.apkUrl;
+    if (url == null) return UpdateRun(UpdateStep.failed, 'no APK');
+    try {
+      final path = await Updater.download(url, onProgress);
+      final chk = await Updater.inspect(path);
+      if (chk.sameSignature == false) {
+        await Updater.markBlocked(u.build, 'signature');
+        return UpdateRun(UpdateStep.blockedSignature);
+      }
+      final a = chk.archiveVersion;
+      final i = chk.installedVersion;
+      if (a != null && i != null && a <= i) {
+        await Updater.markBlocked(u.build, 'not_newer');
+        return UpdateRun(UpdateStep.notNewer);
+      }
+      final r = await Updater.install(path);
+      if (r == 'needs_permission') return UpdateRun(UpdateStep.needsPermission);
+      // Only now the installer is open; if the user cancels, the next start
+      // reports it once but the update stays available.
+      await Updater.markPending(u);
+      return UpdateRun(UpdateStep.done);
+    } catch (e) {
+      return UpdateRun(UpdateStep.failed, '$e');
+    }
   }
 }

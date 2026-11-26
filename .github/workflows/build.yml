@@ -38,6 +38,7 @@ jobs:
           --build-number=${{ github.run_number }}
           --dart-define=BUILD_NUMBER=${{ github.run_number }}
           --dart-define=REPO=${{ github.repository }}
+          --dart-define=SUPPORT_URL=${{ vars.SUPPORT_URL }}
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,6 +48,18 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "v1.0.${{ github.run_number }}" \
             --notes "Build ${{ github.run_number }}"
+      - name: Publish update info (read by the app, no API limits)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v1.0.${{ github.run_number }}"
+          printf '{"build": %s, "tag": "%s", "apk": "https://github.com/%s/releases/download/%s/pkg-sender.apk", "page": "https://github.com/%s/releases/tag/%s"}\n' \
+            "${{ github.run_number }}" "$TAG" "$GITHUB_REPOSITORY" "$TAG" "$GITHUB_REPOSITORY" "$TAG" > latest.json
+          cat latest.json
+          gh release view app-meta --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create app-meta --repo "$GITHUB_REPOSITORY" --prerelease \
+              --title "Update info" --notes "Version information read by the app"
+          gh release upload app-meta latest.json --clobber --repo "$GITHUB_REPOSITORY"
       - uses: actions/upload-artifact@v4
         with:
           name: ps4-sender-apk

@@ -22,6 +22,7 @@ import 'services/ps4_sender.dart';
 import 'services/share_intake.dart';
 import 'services/store_catalog.dart';
 import 'services/updater.dart';
+import 'notifications_page.dart';
 import 'settings_page.dart';
 import 'util/brand.dart';
 import 'util/format.dart';
@@ -40,7 +41,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final _ps4 = TextEditingController();
   final _url = TextEditingController();
   final _logs = <String>[];
@@ -83,8 +84,39 @@ class _HomePageState extends State<HomePage> {
     });
     _clearPickerCache();
     appUpdate.addListener(_rebuild);
+    appAnnouncements.addListener(_onNoticesChanged);
+    WidgetsBinding.instance.addObserver(this);
+    // While the app is open, look for new notices every 90 seconds.
+    _poll = Timer.periodic(const Duration(seconds: 90), (_) => refreshNotifications());
     refreshNotifications();
     _startupChecks();
+  }
+
+  Timer? _poll;
+  int _lastUnread = -1;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) refreshNotifications();
+  }
+
+  /// A new notice arrived while the app is open: say so.
+  void _onNoticesChanged() {
+    final n = unreadCount();
+    final grew = _lastUnread >= 0 && n > _lastUnread;
+    _lastUnread = n;
+    if (!grew || !mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(t('You have a new notification.', 'لديك إشعار جديد.')),
+        action: SnackBarAction(
+          label: t('View', 'عرض'),
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const NotificationsPage()),
+          ),
+        ),
+      ));
   }
 
   void _rebuild() {
@@ -185,6 +217,9 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     Bridge.addUrl.removeListener(_onBridge);
     appUpdate.removeListener(_rebuild);
+    appAnnouncements.removeListener(_onNoticesChanged);
+    WidgetsBinding.instance.removeObserver(this);
+    _poll?.cancel();
     _ps4.dispose();
     _url.dispose();
     super.dispose();

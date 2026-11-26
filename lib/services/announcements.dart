@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'updater.dart' show kRepo;
+import 'config.dart';
 
 /// Notices published by the admin app (store/announcements.json).
 const String kAnnouncementsUrl =

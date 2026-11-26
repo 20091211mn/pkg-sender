@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 
 import 'services/app_state.dart';
 import 'services/notify_bridge.dart';
+import 'services/support.dart';
+import 'support_page.dart';
 import 'about_page.dart';
 import 'services/updater.dart';
 
@@ -33,6 +35,10 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     _update = widget.update;
+    if (_update?.blocked == 'signature') {
+      _reinstallHint = true;
+      _message = _signatureMessage();
+    }
     if (Platform.isAndroid) _loadNotif();
   }
 
@@ -79,6 +85,10 @@ class _SettingsPageState extends State<SettingsPage> {
     return '${t('Last check', 'آخر فحص')}: $hh:$mm · ${_notif?['lastResult'] ?? ''}';
   }
 
+  String _signatureMessage() => t(
+      'This update cannot be installed over the current app because it was signed with a different key (an older install). Uninstall the app once, then install the new version. After that, updates install normally.',
+      'لا يمكن تثبيت هذا التحديث فوق النسخة الحالية لأنها موقّعة بمفتاح مختلف (تثبيت قديم). احذف التطبيق مرة واحدة ثم ثبّت النسخة الجديدة. بعدها تعمل التحديثات بشكل عادي.');
+
   Future<void> _check() async {
     setState(() {
       _checking = true;
@@ -91,16 +101,22 @@ class _SettingsPageState extends State<SettingsPage> {
       appUpdate.value = u;
       setState(() {
         _update = u;
-        _message =
-            u == null ? t('You have the latest version.', 'أنت على آخر إصدار.') : null;
+        _reinstallHint = u?.blocked == 'signature';
+        _message = u == null
+            ? t('You have the latest version.', 'أنت على آخر إصدار.')
+            : (u.blocked == 'signature' ? _signatureMessage() : null);
       });
     } catch (e) {
       if (!mounted) return;
+      final s = e.toString();
       setState(() {
-        _message = e.toString().contains('not_found')
-            ? t('Cannot read releases. The repository must be public.',
-                'تعذّر قراءة الإصدارات. يجب أن يكون المستودع عاماً (Public).')
-            : t('Update check failed: $e', 'فشل التحقق من التحديث: $e');
+        _message = s.contains('not_found')
+            ? t('Cannot read the release information. The repository must be public.',
+                'تعذّر قراءة معلومات الإصدارات. يجب أن يكون المستودع عاماً (Public).')
+            : s.contains('rate_limited')
+                ? t('GitHub is limiting requests from your network right now. Try again later.',
+                    'GitHub يحدّ الطلبات من شبكتك الآن. حاول لاحقاً.')
+                : t('Update check failed: $e', 'فشل التحقق من التحديث: $e');
       });
     } finally {
       if (mounted) setState(() => _checking = false);
@@ -109,64 +125,43 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _doUpdate() async {
     final u = _update;
-    final url = u?.apkUrl;
-    if (u == null || url == null) {
-      setState(() => _message =
-          t('This release has no APK.', 'هذا الإصدار لا يحتوي ملف APK.'));
-      return;
-    }
+    if (u == null) return;
     setState(() {
       _downloading = true;
       _progress = 0;
       _message = null;
       _reinstallHint = false;
     });
-    try {
-      final path = await Updater.download(url, (p) {
-        if (mounted) setState(() => _progress = p);
-      });
-
-      // Explain a doomed update instead of looping on it.
-      final chk = await Updater.inspect(path);
-      if (chk.sameSignature == false) {
-        await Updater.snooze(u.build);
-        if (!mounted) return;
-        setState(() {
+    final run = await UpdateFlow.run(u, (p) {
+      if (mounted) setState(() => _progress = p);
+    });
+    if (!mounted) return;
+    setState(() {
+      _downloading = false;
+      switch (run.step) {
+        case UpdateStep.blockedSignature:
+          u.blocked = 'signature';
           _reinstallHint = true;
-          _message = t(
-              'This update cannot be installed over the current app because it was signed with a different key (an older install). Uninstall the app once, then install the new version. After that, updates install normally.',
-              'لا يمكن تثبيت هذا التحديث فوق النسخة الحالية لأنها موقّعة بمفتاح مختلف (تثبيت قديم). احذف التطبيق مرة واحدة ثم ثبّت النسخة الجديدة. بعدها تعمل التحديثات بشكل عادي.');
-        });
-        return;
-      }
-      final a = chk.archiveVersion;
-      final i = chk.installedVersion;
-      if (a != null && i != null && a <= i) {
-        await Updater.snooze(u.build);
-        appUpdate.value = null;
-        if (!mounted) return;
-        setState(() {
+          _message = _signatureMessage();
+          break;
+        case UpdateStep.notNewer:
+          appUpdate.value = null;
           _update = null;
           _message = t('The downloaded version is not newer than the installed one.',
               'النسخة المنزّلة ليست أحدث من المثبتة.');
-        });
-        return;
+          break;
+        case UpdateStep.needsPermission:
+          _message = t('Allow "install unknown apps" for this app, then press Update again.',
+              'اسمح بـ "تثبيت التطبيقات غير المعروفة" لهذا التطبيق، ثم اضغط تحديث مرة أخرى.');
+          break;
+        case UpdateStep.failed:
+          _message = t('Update failed: ${run.error}', 'فشل التحديث: ${run.error}');
+          break;
+        case UpdateStep.done:
+          _message = null;
+          break;
       }
-
-      await Updater.markPending(u);
-      final r = await Updater.install(path);
-      if (!mounted) return;
-      setState(() {
-        _message = r == 'needs_permission'
-            ? t('Allow "install unknown apps" for this app, then press Update again.',
-                'اسمح بـ "تثبيت التطبيقات غير المعروفة" لهذا التطبيق، ثم اضغط تحديث مرة أخرى.')
-            : null;
-      });
-    } catch (e) {
-      if (mounted) setState(() => _message = t('Update failed: $e', 'فشل التحديث: $e'));
-    } finally {
-      if (mounted) setState(() => _downloading = false);
-    }
+    });
   }
 
   Future<void> _copy(String text, String done) async {
@@ -202,6 +197,15 @@ class _SettingsPageState extends State<SettingsPage> {
                 onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(builder: (_) => const AboutPage())),
               ),
+              if (SupportService.enabled)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.support_agent),
+                  title: Text(t('Help and support', 'المساعدة والدعم')),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(builder: (_) => const SupportPage())),
+                ),
               const SizedBox(height: 8),
               FilledButton.tonalIcon(
                 onPressed: (_checking || _downloading) ? null : _check,
@@ -212,6 +216,13 @@ class _SettingsPageState extends State<SettingsPage> {
                 const Padding(
                   padding: EdgeInsets.only(top: 12),
                   child: LinearProgressIndicator(),
+                ),
+              if (Updater.diagnostics.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(Updater.diagnostics,
+                      textDirection: TextDirection.ltr,
+                      style: Theme.of(context).textTheme.bodySmall),
                 ),
               if (u != null) ...[
                 const SizedBox(height: 16),
@@ -248,7 +259,7 @@ class _SettingsPageState extends State<SettingsPage> {
                             ),
                             const SizedBox(height: 6),
                             Text('${(_progress * 100).toStringAsFixed(0)}%'),
-                          ] else
+                          ] else if (u.blocked != 'signature')
                             FilledButton.icon(
                               onPressed: _doUpdate,
                               icon: const Icon(Icons.download),

@@ -16,6 +16,53 @@ class ReleaseInfo {
   final String body;
 }
 
+/// A support conversation (an issue in the private support repository).
+class Ticket {
+  Ticket({
+    required this.number,
+    required this.title,
+    required this.open,
+    required this.comments,
+    required this.updated,
+    required this.created,
+    required this.body,
+  });
+
+  final int number;
+  final String title;
+  final bool open;
+  final int comments;
+  final String updated;
+  final String created;
+  final String body;
+
+  /// The lines before the message (app version, contact...).
+  String get meta => body.contains('\n---\n') ? body.split('\n---\n').first.trim() : '';
+}
+
+class TicketMessage {
+  TicketMessage({required this.fromAdmin, required this.text, required this.date});
+
+  final bool fromAdmin;
+  final String text;
+  final String date;
+}
+
+class AdminStats {
+  int apkDownloads = 0;
+  int apkLatest = 0;
+  int ipaDownloads = 0;
+  int adminDownloads = 0;
+  int releases = 0;
+  int stars = 0;
+  int forks = 0;
+  int watchers = 0;
+  int views = 0;
+  int viewsUnique = 0;
+  int clones = 0;
+  int clonesUnique = 0;
+}
+
 class GithubError implements Exception {
   GithubError(this.status, this.message);
 
@@ -71,6 +118,14 @@ class GithubApi {
       msg = (jsonDecode(r.body) as Map)['message']?.toString() ?? r.body;
     } catch (_) {}
     throw GithubError(r.status, msg);
+  }
+
+  /// The repository's current full name. After a rename GitHub answers the old
+  /// name with a redirect, but it does not redirect writes, so use the new name.
+  Future<String> resolveRepo() async {
+    final r = await _send('GET', 'https://api.github.com/repos/$repo');
+    _check(r, [200]);
+    return ((jsonDecode(r.body) as Map)['full_name'] ?? repo) as String;
   }
 
   /// Checks the token and that it can write to the repository.
@@ -292,6 +347,132 @@ class GithubApi {
       }
     }
     return (build: build, apkUrl: apk);
+  }
+
+  // -------------------------------------------------------------- statistics
+
+  Future<void> _traffic(String kind, void Function(int count, int uniques) set) async {
+    final r = await _send('GET', 'https://api.github.com/repos/$repo/traffic/$kind');
+    if (r.status != 200) return; // needs push access; otherwise just no numbers
+    final m = jsonDecode(r.body) as Map;
+    set(((m['count'] ?? 0) as num).toInt(), ((m['uniques'] ?? 0) as num).toInt());
+  }
+
+  /// Numbers from GitHub: downloads of the app files, repository activity.
+  Future<AdminStats> stats() async {
+    final s = AdminStats();
+    final info = await _send('GET', 'https://api.github.com/repos/$repo');
+    if (info.status == 200) {
+      final m = jsonDecode(info.body) as Map;
+      s.stars = ((m['stargazers_count'] ?? 0) as num).toInt();
+      s.forks = ((m['forks_count'] ?? 0) as num).toInt();
+      s.watchers = ((m['subscribers_count'] ?? 0) as num).toInt();
+    }
+    final rel = await _send(
+        'GET', 'https://api.github.com/repos/$repo/releases?per_page=100');
+    if (rel.status == 200) {
+      var latestSet = false;
+      for (final x in jsonDecode(rel.body) as List) {
+        final m = x as Map;
+        final pre = m['prerelease'] == true;
+        for (final a in (m['assets'] as List? ?? const [])) {
+          final n = ((a as Map)['name'] ?? '') as String;
+          final c = ((a['download_count'] ?? 0) as num).toInt();
+          if (n == 'pkg-sender.apk' || n == 'ps4-sender.apk') {
+            s.apkDownloads += c;
+            if (!pre) {
+              s.releases++;
+              if (!latestSet) {
+                s.apkLatest = c;
+                latestSet = true;
+              }
+            }
+          } else if (n.endsWith('.ipa')) {
+            s.ipaDownloads += c;
+          } else if (n == 'pkg-admin.apk' || n == 'ps4-admin.apk') {
+            s.adminDownloads += c;
+          }
+        }
+      }
+    }
+    await _traffic('views', (c, u) {
+      s.views = c;
+      s.viewsUnique = u;
+    });
+    await _traffic('clones', (c, u) {
+      s.clones = c;
+      s.clonesUnique = u;
+    });
+    return s;
+  }
+
+  // ----------------------------------------------------------------- support
+
+  /// Conversations of the private support repository (open first).
+  Future<List<Ticket>> listTickets(String supportRepo) async {
+    final r = await _send('GET',
+        'https://api.github.com/repos/$supportRepo/issues?state=all&per_page=50&sort=updated&direction=desc');
+    if (r.status == 404) throw GithubError(404, 'not_found');
+    _check(r, [200]);
+    final out = <Ticket>[];
+    for (final x in jsonDecode(r.body) as List) {
+      final m = x as Map;
+      if (m['pull_request'] != null) continue;
+      out.add(Ticket(
+        number: (m['number'] as num).toInt(),
+        title: (m['title'] ?? '') as String,
+        open: m['state'] == 'open',
+        comments: ((m['comments'] ?? 0) as num).toInt(),
+        updated: (m['updated_at'] ?? '') as String,
+        created: (m['created_at'] ?? '') as String,
+        body: (m['body'] ?? '') as String,
+      ));
+    }
+    out.sort((a, b) {
+      if (a.open != b.open) return a.open ? -1 : 1;
+      return b.updated.compareTo(a.updated);
+    });
+    return out;
+  }
+
+  Future<List<TicketMessage>> ticketThread(String supportRepo, Ticket t) async {
+    final r = await _send('GET',
+        'https://api.github.com/repos/$supportRepo/issues/${t.number}/comments?per_page=100');
+    _check(r, [200]);
+    final parts = t.body.split('\n---\n');
+    final first = parts.length > 1 ? parts[1] : t.body;
+    final msgs = <TicketMessage>[
+      TicketMessage(
+        fromAdmin: false,
+        text: first.replaceAll(RegExp(r'<!-- key:[0-9a-f]{32} -->'), '').trim(),
+        date: t.created,
+      ),
+    ];
+    for (final c in jsonDecode(r.body) as List) {
+      final m = c as Map;
+      final body = (m['body'] ?? '') as String;
+      final user = body.startsWith('[user]');
+      msgs.add(TicketMessage(
+        fromAdmin: !user,
+        text: body.replaceFirst(RegExp(r'^\[(user|admin)\]\s*'), '').trim(),
+        date: (m['created_at'] ?? '') as String,
+      ));
+    }
+    return msgs;
+  }
+
+  Future<void> replyTicket(String supportRepo, int number, String text) async {
+    final r = await _send(
+        'POST', 'https://api.github.com/repos/$supportRepo/issues/$number/comments',
+        json: {'body': '[admin]\n\n$text'});
+    _check(r, [201]);
+  }
+
+  Future<void> setTicketOpen(String supportRepo, int number, bool open) async {
+    final r = await _send(
+        'PATCH', 'https://api.github.com/repos/$supportRepo/issues/$number',
+        json: {'state': open ? 'open' : 'closed'});
+    _check(r, [200]);
   }
 
   // --------------------------------------------------------- release assets
